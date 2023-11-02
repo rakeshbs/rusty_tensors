@@ -12,7 +12,7 @@ pub struct Linear {
 
 impl Linear {
     pub fn new(in_features: usize, out_features: usize) -> Self {
-        let weight = tensor_rand(out_features, in_features);
+        let weight = tensor_rand(in_features, out_features);
         let bias = tensor_rand(out_features, 1);
         Linear { weight, bias }
     }
