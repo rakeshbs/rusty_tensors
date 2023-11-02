@@ -1,11 +1,11 @@
-use ndarray::{ArrayD, IxDyn};
+use ndarray::{Array2, IxDyn};
 use std::cell::RefCell;
 use std::rc::Rc;
 
 type TensorRef = Rc<Tensor>;
 type Float = f32;
-type ArrayT = ArrayD<Float>;
-type ArrayTRef = Rc<RefCell<ArrayD<Float>>>;
+type ArrayT = Array2<f32>;
+type ArrayTRef = Rc<RefCell<ArrayT>>;
 
 pub struct Tensor {
     data: ArrayTRef,
@@ -16,12 +16,12 @@ pub struct Tensor {
 
 impl Tensor {
     pub fn new(
-        _data: ArrayD<f32>,
+        _data: ArrayT,
         requires_grad: bool,
         backward_fn: impl Fn(ArrayTRef) + 'static,
     ) -> TensorRef {
+        let grad = Rc::new(RefCell::new(ArrayT::zeros(_data.dim())));
         let data = Rc::new(RefCell::new(_data));
-        let grad = Rc::new(RefCell::new(ArrayD::zeros(data.borrow().shape())));
         Rc::new(Tensor {
             data,
             grad,
@@ -31,17 +31,30 @@ impl Tensor {
     }
 
     pub fn backward(&self) {
-        self.backward_fn.as_ref().unwrap()(self.grad.clone());
+        let grad = Rc::new(RefCell::new(ArrayT::ones(self.data.borrow().dim())));
+        self.backward_fn.as_ref().unwrap()(grad);
     }
 
     pub fn output(&self) -> ArrayT {
         self.data.borrow().clone()
     }
+
+    pub fn step(&self, lr: Float) {
+        if self.requires_grad {
+            let mut data = self.data.borrow_mut();
+            let grad = self.grad.borrow();
+            *data = &*data - lr * &*grad;
+        }
+    }
+
+    pub fn zero_grad(&self) {
+        let mut grad = self.grad.borrow_mut();
+        *grad = ArrayT::zeros(grad.dim());
+    }
 }
 
-pub fn tensor(data: &[Float], requires_grad: bool) -> TensorRef {
+pub fn tensor(data: ArrayT, requires_grad: bool) -> TensorRef {
     let backward_fn = |_: ArrayTRef| {};
-    let data = ArrayD::from_shape_vec(IxDyn(&[data.len()]), data.to_vec()).unwrap();
     Tensor::new(data, requires_grad, backward_fn)
 }
 
@@ -49,11 +62,15 @@ pub fn add(left: &TensorRef, right: &TensorRef) -> TensorRef {
     let func = |left: &TensorRef, right: &TensorRef| {
         let (left, right) = (left.clone(), right.clone());
         move |grad: ArrayTRef| {
-            let grad = &*grad.borrow();
-            let mut l = &*left.grad.borrow_mut();
-            let mut r = &*right.grad.borrow_mut();
-            l = &(l + grad);
-            r = &(r + grad);
+            {
+                let grad = &*grad.borrow();
+                let mut l = left.grad.borrow_mut();
+                let mut r = right.grad.borrow_mut();
+                *l = &*l + &*grad;
+                *r = &*r + &*grad;
+            }
+            left.backward_fn.as_ref().unwrap()(left.grad.clone());
+            right.backward_fn.as_ref().unwrap()(right.grad.clone());
         }
     };
     let data = &*left.data.borrow() + &*right.data.borrow();
@@ -64,63 +81,125 @@ pub fn mul(left: &TensorRef, right: &TensorRef) -> TensorRef {
     let func = |left: &TensorRef, right: &TensorRef| {
         let (left, right) = (left.clone(), right.clone());
         move |grad: ArrayTRef| {
-            let grad = &*grad.borrow();
-            let mut l = &*left.grad.borrow_mut();
-            let mut r = &*right.grad.borrow_mut();
-            l = &(l + &(grad * &*right.data.borrow()));
-            r = &(r + &(grad * &*left.data.borrow()));
+            {
+                let grad = &*grad.borrow();
+                let mut l = left.grad.borrow_mut();
+                let mut r = right.grad.borrow_mut();
+                println!("\nl 1: {}", &l);
+                *l = &*l + &(&*right.data.borrow() * &*grad);
+                *r = &*r + &(&*left.data.borrow() * &*grad);
+                println!("l 2: {}\n", &l);
+            }
+            left.backward_fn.as_ref().unwrap()(left.grad.clone());
+            right.backward_fn.as_ref().unwrap()(right.grad.clone());
         }
     };
-    let data = &*left.data.borrow() * &*right.data.borrow();
+    let a = &*left.data.borrow();
+    let data = a.t().dot(&*right.data.borrow());
     Tensor::new(data, true, func(left, right))
 }
 
-//
-// // Overload Add for Tensor
-// impl Add for Tensor {
-//     type Output = Self;
-//
-//     fn add(self, other: Self) -> Self {
-//         let result_data = &self.data + &other.data;
-//         let mut result_tensor = Tensor::new(result_data);
-//
-//         // Backward function for add
-//         let backward_fn = move |grad: &Tensor| {
-//             self.grad.as_ref().unwrap().data += &grad.data;
-//             other.grad.as_ref().unwrap().data += &grad.data;
-//         };
-//
-//         result_tensor.set_backward_fn(backward_fn);
-//         result_tensor
-//     }
-// }
-//
-// // Overload Mul for Tensor
-// impl Mul for Tensor {
-//     type Output = Self;
-//
-//     fn mul(self, other: Self) -> Self {
-//         let result_data = &self.data * &other.data;
-//         let mut result_tensor = Tensor::new(result_data);
-//
-//         // Backward function for multiply
-//         let backward_fn = move |grad: &Tensor| {
-//             self.grad.as_ref().unwrap().data += &(&other.data * &grad.data);
-//             other.grad.as_ref().unwrap().data += &(&self.data * &grad.data);
-//         };
-//
-//         result_tensor.set_backward_fn(backward_fn);
-//         result_tensor
-//     }
-// }
-//
-// fn main() {
-//     let data_x = ArrayD::from_elem(IxDyn(&[2, 2]), 2.0);
-//     let data_y = ArrayD::from_elem(IxDyn(&[2, 2]), 3.0);
-//
-//     let mut tensor_x = Tensor::new(data_x);
-//     let tensor_y = Tensor::new(data_y);
-//
-//     let tensor_z = tensor_x + tensor_y;
-//     tensor_z.backward();
-// }
+pub fn pow(left: &TensorRef, right: Float) -> TensorRef {
+    let func = |left: &TensorRef, right: Float| {
+        let left = left.clone();
+        move |grad: ArrayTRef| {
+            {
+                let grad = &*grad.borrow();
+                let mut l = left.grad.borrow_mut();
+                *l = &*l + &(&*left.data.borrow() * &*grad * right);
+            }
+            left.backward_fn.as_ref().unwrap()(left.grad.clone());
+        }
+    };
+    let data = left.data.borrow().mapv(|x| x.powf(right));
+    Tensor::new(data, true, func(left, right))
+}
+
+pub fn sub(left: &TensorRef, right: &TensorRef) -> TensorRef {
+    let func = |left: &TensorRef, right: &TensorRef| {
+        let (left, right) = (left.clone(), right.clone());
+        move |grad: ArrayTRef| {
+            {
+                let grad = &*grad.borrow();
+                let mut l = left.grad.borrow_mut();
+                let mut r = right.grad.borrow_mut();
+                *l = &*l + &*grad;
+                *r = &*r - &*grad;
+            }
+            left.backward_fn.as_ref().unwrap()(left.grad.clone());
+            right.backward_fn.as_ref().unwrap()(right.grad.clone());
+        }
+    };
+    let data = &*left.data.borrow() - &*right.data.borrow();
+    Tensor::new(data, true, func(left, right))
+}
+
+pub fn neg(left: &TensorRef) -> TensorRef {
+    let func = |left: &TensorRef| {
+        let left = left.clone();
+        move |grad: ArrayTRef| {
+            {
+                let grad = &*grad.borrow();
+                let mut l = left.grad.borrow_mut();
+                *l = &*l - &*grad;
+            }
+            left.backward_fn.as_ref().unwrap()(left.grad.clone());
+        }
+    };
+    let data = -&*left.data.borrow();
+    Tensor::new(data, true, func(left))
+}
+
+pub fn sum(left: &TensorRef) -> TensorRef {
+    let func = |left: &TensorRef| {
+        let left = left.clone();
+        move |grad: ArrayTRef| {
+            {
+                let grad = &*grad.borrow();
+                let mut l = left.grad.borrow_mut();
+                *l = &*l + &*grad;
+            }
+            left.backward_fn.as_ref().unwrap()(left.grad.clone());
+        }
+    };
+    let data = left.data.borrow();
+    let summed = data.sum_axis(ndarray::Axis(0));
+    let len = summed.len();
+    let reshaped = summed.into_shape((len, 1)).unwrap();
+    Tensor::new(reshaped, true, func(left))
+}
+
+pub fn relu(left: &TensorRef) -> TensorRef {
+    let func = |left: &TensorRef| {
+        let left = left.clone();
+        move |grad: ArrayTRef| {
+            {
+                let grad = &*grad.borrow();
+                let mut l = left.grad.borrow_mut();
+                *l = &*l + &(&*grad * left.data.borrow().mapv(|x| if x > 0. { 1. } else { 0. }));
+            }
+            left.backward_fn.as_ref().unwrap()(left.grad.clone());
+        }
+    };
+    let data = left.data.borrow().mapv(|x| if x > 0. { x } else { 0. });
+    Tensor::new(data, true, func(left))
+}
+
+pub fn leaky_relu(left: &TensorRef) -> TensorRef {
+    let func = |left: &TensorRef| {
+        let left = left.clone();
+        move |grad: ArrayTRef| {
+            {
+                let grad = &*grad.borrow();
+                let mut l = left.grad.borrow_mut();
+                *l = &*l + &(&*grad * left.data.borrow().mapv(|x| if x > 0. { 1. } else { 0.01 }));
+            }
+            left.backward_fn.as_ref().unwrap()(left.grad.clone());
+        }
+    };
+    let data = left
+        .data
+        .borrow()
+        .mapv(|x| if x > 0. { x } else { 0.01 * x });
+    Tensor::new(data, true, func(left))
+}
