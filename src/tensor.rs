@@ -1,11 +1,12 @@
 use ndarray::{Array2, IxDyn};
+use rand::Rng;
 use std::cell::RefCell;
 use std::rc::Rc;
 
-type TensorRef = Rc<Tensor>;
+pub type TensorRef = Rc<Tensor>;
 type Float = f32;
-type ArrayT = Array2<f32>;
-type ArrayTRef = Rc<RefCell<ArrayT>>;
+pub type ArrayT = Array2<f32>;
+pub type ArrayTRef = Rc<RefCell<ArrayT>>;
 
 pub struct Tensor {
     data: ArrayTRef,
@@ -51,6 +52,15 @@ impl Tensor {
         let mut grad = self.grad.borrow_mut();
         *grad = ArrayT::zeros(grad.dim());
     }
+}
+
+fn create_random_array2(rows: usize, cols: usize) -> ArrayT {
+    let mut rng = rand::thread_rng();
+    ArrayT::from_shape_fn((rows, cols), |_| rng.gen::<f32>())
+}
+
+pub fn tensor_rand(rows: usize, cols: usize) -> TensorRef {
+    Tensor::new(create_random_array2(rows, cols), true, |_: ArrayTRef| {})
 }
 
 pub fn tensor(data: ArrayT, requires_grad: bool) -> TensorRef {
