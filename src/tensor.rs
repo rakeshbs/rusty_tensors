@@ -95,17 +95,18 @@ pub fn mul(left: &TensorRef, right: &TensorRef) -> TensorRef {
                 let grad = &*grad.borrow();
                 let mut l = left.grad.borrow_mut();
                 let mut r = right.grad.borrow_mut();
-                println!("\nl 1: {}", &l);
-                *l = &*l + &(&*right.data.borrow() * &*grad);
-                *r = &*r + &(&*left.data.borrow() * &*grad);
-                println!("l 2: {}\n", &l);
+                let d_l = left.data.borrow();
+                let d_r = right.data.borrow();
+                *l = &*l + d_r.dot(&grad.t());
+                *r = &*r + d_l.dot(grad);
             }
             left.backward_fn.as_ref().unwrap()(left.grad.clone());
             right.backward_fn.as_ref().unwrap()(right.grad.clone());
         }
     };
     let a = &*left.data.borrow();
-    let data = a.t().dot(&*right.data.borrow());
+    let b = &*right.data.borrow();
+    let data = a.t().dot(b);
     Tensor::new(data, true, func(left, right))
 }
 
